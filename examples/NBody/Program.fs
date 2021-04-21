@@ -39,8 +39,8 @@ let stepAll(objects:List<MassObject>, steps:int, stepSize:float) =
             let mutable o = objects
             for _ in 1..steps do
                 let newObjects = Seq.toList o
-                seq {0..objects.Length-1}
-                |> Seq.iter (fun x -> step(o, newObjects, x, stepSize))
+                for x in 0..objects.Length-1 do
+                    step(o, newObjects, x, stepSize)
                 o <- newObjects
             o
             
