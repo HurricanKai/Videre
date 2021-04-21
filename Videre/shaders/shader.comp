@@ -1,0 +1,334 @@
+#version 460
+
+#define WG_SIZE 32
+layout (local_size_x = 8, local_size_y = 4) in;
+#define STACK_SIZE 32
+
+layout(push_constant, std430) uniform Parameters {
+    uint Width;
+    uint Height;
+} params;
+
+layout (set = 0, binding = 0, rgba8) uniform writeonly image2D target;
+layout (set = 0, binding = 1) readonly buffer Commands {
+    uint commands[];
+};
+
+const float positive_infinity = 1.0/0.0;
+
+float[STACK_SIZE] evalStack;
+uint eval_stack_head = 0;
+
+void pushEval(float value)
+{   
+    evalStack[eval_stack_head++] = value;
+}
+
+float popEval()
+{
+    return evalStack[--eval_stack_head];
+}
+
+float dot2( in vec2 v ) { return dot(v,v); }
+float dot2( in vec3 v ) { return dot(v,v); }
+float ndot( in vec2 a, in vec2 b ) { return a.x*b.x - a.y*b.y; }
+    
+#define SDF_CMD_END 0
+
+#define SDF_CMD_UNION 10
+#define SDF_CMD_SUBTRACTION 11
+#define SDF_CMD_INTERSECTION 12
+#define SDF_CMD_SMOOTH_UNION 13
+#define SDF_CMD_SMOOTH_SUBTRACTION 14
+#define SDF_CMD_SMOOTH_INTERSECTION 15
+#define SDF_CMD_ROUND 16
+#define SDF_CMD_ANNULAR 17
+
+#define SDF_CMD_CIRCLE 20
+#define SDF_CMD_NONE_SHAPE 21
+#define SDF_CMD_ROUNDED_BOX 22
+#define SDF_CMD_BOX 23
+#define SDF_CMD_ORIENTED_BOX 24
+#define SDF_CMD_SEGMENT 25
+#define SDF_CMD_RHOMBUS 26
+#define SDF_CMD_BEZIR 27
+#define SDF_CMD_POLYGON 28
+
+float sdCircle( vec2 p, float r )
+{
+    return length(p) - r;
+}
+
+float sdRoundedBox( in vec2 p, in vec2 b, in vec4 r )
+{
+    r.xy = (p.x>0.0)?r.xy : r.zw;
+    r.x  = (p.y>0.0)?r.x  : r.y;
+    vec2 q = abs(p)-b+r.x;
+    return min(max(q.x,q.y),0.0) + length(max(q,0.0)) - r.x;
+}
+
+float sdBox( in vec2 p, in vec2 b )
+{
+    vec2 d = abs(p)-b;
+    return length(max(d,0.0)) + min(max(d.x,d.y),0.0);
+}
+
+float sdOrientedBox( in vec2 p, in vec2 a, in vec2 b, float th )
+{
+    float l = length(b-a);
+    vec2  d = (b-a)/l;
+    vec2  q = (p-(a+b)*0.5);
+    q = mat2(d.x,-d.y,d.y,d.x)*q;
+    q = abs(q)-vec2(l,th)*0.5;
+    return length(max(q,0.0)) + min(max(q.x,q.y),0.0);
+}
+
+float sdSegment( in vec2 p, in vec2 a, in vec2 b )
+{
+    vec2 pa = p-a, ba = b-a;
+    float h = clamp( dot(pa,ba)/dot(ba,ba), 0.0, 1.0 );
+    return length( pa - ba*h );
+}
+
+float sdRhombus( in vec2 p, in vec2 b )
+{
+    vec2 q = abs(p);
+    float h = clamp((-2.0*ndot(q,b)+ndot(b,b))/dot(b,b),-1.0,1.0);
+    float d = length( q - 0.5*b*vec2(1.0-h,1.0+h) );
+    return d * sign( q.x*b.y + q.y*b.x - b.x*b.y );
+}
+
+float sdBezier( in vec2 pos, in vec2 A, in vec2 B, in vec2 C )
+{
+    vec2 a = B - A;
+    vec2 b = A - 2.0*B + C;
+    vec2 c = a * 2.0;
+    vec2 d = A - pos;
+    float kk = 1.0/dot(b,b);
+    float kx = kk * dot(a,b);
+    float ky = kk * (2.0*dot(a,a)+dot(d,b)) / 3.0;
+    float kz = kk * dot(d,a);
+    float res = 0.0;
+    float p = ky - kx*kx;
+    float p3 = p*p*p;
+    float q = kx*(2.0*kx*kx-3.0*ky) + kz;
+    float h = q*q + 4.0*p3;
+    if( h >= 0.0)
+    {
+        h = sqrt(h);
+        vec2 x = (vec2(h,-h)-q)/2.0;
+        vec2 uv = sign(x)*pow(abs(x), vec2(1.0/3.0));
+        float t = clamp( uv.x+uv.y-kx, 0.0, 1.0 );
+        res = dot2(d + (c + b*t)*t);
+    }
+    else
+    {
+        float z = sqrt(-p);
+        float v = acos( q/(p*z*2.0) ) / 3.0;
+        float m = cos(v);
+        float n = sin(v)*1.732050808;
+        vec3  t = clamp(vec3(m+m,-n-m,n-m)*z-kx,0.0,1.0);
+        res = min( dot2(d+(c+b*t.x)*t.x),
+        dot2(d+(c+b*t.y)*t.y) );
+        // the third root cannot be the closest
+        // res = min(res,dot2(d+(c+b*t.z)*t.z));
+    }
+    return sqrt( res );
+}
+
+float evaluate(in vec2 p)
+{
+    uint pc = 0;
+    for (uint pc = 0; commands[pc] != SDF_CMD_END; pc++)
+    {
+        uint cmd = commands[pc];
+        switch(cmd)
+        {
+            case SDF_CMD_UNION:
+            {
+                pushEval(min(popEval(), popEval()));
+                break;
+            }
+            case SDF_CMD_SUBTRACTION:
+            {
+                pushEval(max(-popEval(), popEval()));
+                break;
+            }
+            case SDF_CMD_INTERSECTION:
+            {
+                pushEval(max(popEval(), popEval()));
+                break;
+            }
+            case SDF_CMD_SMOOTH_UNION:
+            {
+                float k = uintBitsToFloat(commands[++pc]);
+                float d1 = popEval();
+                float d2 = popEval();
+                float h = clamp( 0.5 + 0.5*(d2-d1)/k, 0.0, 1.0 );
+                pushEval(mix( d2, d1, h ) - k*h*(1.0-h));
+                break;
+            }
+            case SDF_CMD_SMOOTH_SUBTRACTION:
+            {
+                float k = uintBitsToFloat(commands[++pc]);
+                float d1 = popEval();
+                float d2 = popEval();
+                float h = clamp( 0.5 - 0.5*(d2+d1)/k, 0.0, 1.0 );
+                pushEval(mix( d2, -d1, h ) + k*h*(1.0-h));
+                break;
+            }
+            case SDF_CMD_SMOOTH_INTERSECTION:
+            {
+                float k = uintBitsToFloat(commands[++pc]);
+                float d1 = popEval();
+                float d2 = popEval();
+                float h = clamp( 0.5 - 0.5*(d2-d1)/k, 0.0, 1.0 );
+                pushEval(mix( d2, d1, h ) + k*h*(1.0-h));
+                break;
+            }
+            case SDF_CMD_ROUND:
+            {
+                float r = uintBitsToFloat(commands[++pc]);
+                pushEval(popEval() - r);
+                break;
+            }
+            case SDF_CMD_ANNULAR:
+            {
+                float r = uintBitsToFloat(commands[++pc]);
+                pushEval(abs(popEval()) - r);
+                break;
+            }
+            
+            case SDF_CMD_CIRCLE:
+            {
+                float radius = uintBitsToFloat(commands[++pc]);
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdCircle((transform * vec3(p * scale, 1)).xy, radius));
+                break;
+            }
+            case SDF_CMD_NONE_SHAPE:
+            {
+                pushEval(positive_infinity);
+                break;
+            }
+            case SDF_CMD_ROUNDED_BOX:
+            {
+                vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                vec4 r = vec4(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdRoundedBox((transform * vec3(p * scale, 1)).xy, b, r));
+                break;
+            }
+            case SDF_CMD_BOX:
+            {
+                vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdBox((transform * vec3(p * scale, 1)).xy, b));
+                break;
+            }
+            case SDF_CMD_ORIENTED_BOX:
+            {
+                vec2 a = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                float th = uintBitsToFloat(commands[++pc]);
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdOrientedBox((transform * vec3(p * scale, 1)).xy, a, b, th));
+                break;
+            }
+            case SDF_CMD_SEGMENT:
+            {
+                vec2 a = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdSegment((transform * vec3(p * scale, 1)).xy, a, b));
+                break;
+            }
+            case SDF_CMD_RHOMBUS:
+            {
+                vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdRhombus((transform * vec3(p * scale, 1)).xy, b));
+                break;
+            }
+            case SDF_CMD_BEZIR:
+            {
+                vec2 A = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                vec2 B = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                vec2 C = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                mat3 transform = mat3(
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                pushEval(sdBezier((transform * vec3(p * scale, 1)).xy, A, B, C));
+                break;
+            }
+            // case SDF_CMD_POLYGON:
+            // {
+            //     mat3 transform = mat3(
+            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
+            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
+            //     vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+            // 
+            //     uint pointCount = commands[++pc];
+            //     uint start = pc;
+            //     pc += pointCount;
+            //     uint end = pc;
+            //     vec2 p2 = (transform * vec3(p * scale, 1)).xy;
+            //     vec2 v0 = vec2(uintBitsToFloat(commands[0]), uintBitsToFloat(commands[1]));
+            //     float d = dot(p2-v0,p2-v0);
+            //     float s = 1.0;
+            //     for( uint i=0, j=pointCount-1; i<pointCount; j=i, i++ )
+            //     {
+            //         vec2 vi = vec2(uintBitsToFloat(commands[start + i * 2]), uintBitsToFloat(commands[start + i * 2 + 1]));
+            //         vec2 vj = vec2(uintBitsToFloat(commands[start + j * 2]), uintBitsToFloat(commands[start + i * 2 + 1]));
+            //         vec2 e = vj - vi;
+            //         vec2 w =    p2 - vi;
+            //         vec2 b = w - e*clamp( dot(w,e)/dot(e,e), 0.0, 1.0 );
+            //         d = min( d, dot(b,b) );
+            //         bvec3 c = bvec3(p2.y>=vi.y,p2.y<vj.y,e.x*w.y>e.y*w.x);
+            //         if( all(c) || all(not(c)) ) s*=-1.0;
+            //     }
+            //     pushEval(s*sqrt(d));
+            //     break;
+            // }
+        }
+    }
+    
+    return popEval();
+}
+
+void main(){
+    vec2 res = vec2(params.Width, params.Height);
+    float d = evaluate(gl_GlobalInvocationID.xy);
+
+    if (d <= 0)
+    {
+        imageStore(target, ivec2(gl_GlobalInvocationID.xy), vec4(1, 1, 1, 1));
+    }
+}

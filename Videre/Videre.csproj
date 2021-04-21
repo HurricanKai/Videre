@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <PropertyGroup>
+        <TargetFramework>net5.0</TargetFramework>
+        <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+        
+    </PropertyGroup>
+
+    <ItemGroup>
+      <PackageReference Include="ConsoleTables" Version="2.4.2" />
+      <PackageReference Include="Silk.NET.Input" Version="2.2.0" />
+      <PackageReference Include="Silk.NET.Vulkan" Version="2.2.0" />
+      <PackageReference Include="Silk.NET.Vulkan.Extensions.EXT" Version="2.2.0" />
+      <PackageReference Include="Silk.NET.Vulkan.Extensions.KHR" Version="2.2.0" />
+      <PackageReference Include="Silk.NET.Windowing.Common" Version="2.2.0" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <ProjectReference Include="..\VMASharp\VMASharp\VMASharp.csproj" />
+    </ItemGroup>
+
+    <ItemGroup>
+      <None Update="shaders\compute.spv">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+      </None>
+    </ItemGroup>
+
+</Project>
