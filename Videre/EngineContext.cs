@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Runtime.CompilerServices;
 using Silk.NET.Maths;
 using Silk.NET.Vulkan;
@@ -15,6 +16,8 @@ namespace Videre
         private Matrix3X3<float> _lastTransform = Matrix3X3<float>.Identity;
         private Vector2D<float> _scale = Vector2D<float>.One;
         private Vector2D<float> _lastScale = Vector2D<float>.One;
+        private Color _color;
+        private Color _lastColor;
 
         private static AllocationCreateInfo AllocationCreateInfo(VulkanMemoryPool? pool)
         {
@@ -182,6 +185,24 @@ namespace Videre
                 Write(_scale);
                 _lastScale = _scale;
             }
+
+            if (_lastColor != _color)
+            {
+                Write(Command.Color);
+                Write(_color.R / 255f);
+                Write(_color.B / 255f);
+                Write(_color.G / 255f);
+                if (_color.A != 255)
+                    throw new Exception("Alpha colors are not supported");
+            }
+        }
+
+        public void Color(Color color, Action<EngineContext> next)
+        {
+            var oldColor = _color;
+            _color = color;
+            next(this);
+            _color = oldColor;
         }
         
         public void Circle(float radius)
@@ -262,6 +283,7 @@ namespace Videre
             End = 0,
             Transform = 1,
             Scale = 2,
+            Color = 3,
 
             Union = 10,
             Subtraction = 11,
