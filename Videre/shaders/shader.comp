@@ -34,6 +34,8 @@ float dot2( in vec3 v ) { return dot(v,v); }
 float ndot( in vec2 a, in vec2 b ) { return a.x*b.x - a.y*b.y; }
     
 #define SDF_CMD_END 0
+#define SDF_CMD_TRANSFORM 1
+#define SDF_CMD_SCALE 2
 
 #define SDF_CMD_UNION 10
 #define SDF_CMD_SUBTRACTION 11
@@ -139,11 +141,36 @@ float sdBezier( in vec2 pos, in vec2 A, in vec2 B, in vec2 C )
 float evaluate(in vec2 p)
 {
     uint pc = 0;
+    mat3 transform = mat3(1.0);
+    vec2 scale = vec2(1.0);
     for (uint pc = 0; commands[pc] != SDF_CMD_END; pc++)
     {
         uint cmd = commands[pc];
         switch(cmd)
         {
+            case SDF_CMD_TRANSFORM:
+            {
+                // NOTE: the following is a transpose + read at the same time. Saves the transpose on the CPU
+                float m11 = uintBitsToFloat(commands[++pc]);
+                float m21 = uintBitsToFloat(commands[++pc]);
+                float m31 = uintBitsToFloat(commands[++pc]);
+                float m12 = uintBitsToFloat(commands[++pc]);
+                float m22 = uintBitsToFloat(commands[++pc]);
+                float m32 = uintBitsToFloat(commands[++pc]);
+                float m13 = uintBitsToFloat(commands[++pc]);
+                float m23 = uintBitsToFloat(commands[++pc]);
+                float m33 = uintBitsToFloat(commands[++pc]);
+                transform = mat3(
+                    vec3(m11, m12, m13),
+                    vec3(m21, m22, m23),
+                    vec3(m31, m32, m33));
+                break;
+            }
+            case SDF_CMD_SCALE:
+            {
+                scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
+                break;
+            }
             case SDF_CMD_UNION:
             {
                 pushEval(min(popEval(), popEval()));
@@ -202,11 +229,6 @@ float evaluate(in vec2 p)
             case SDF_CMD_CIRCLE:
             {
                 float radius = uintBitsToFloat(commands[++pc]);
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdCircle((transform * vec3(p * scale, 1)).xy, radius));
                 break;
             }
@@ -219,22 +241,12 @@ float evaluate(in vec2 p)
             {
                 vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 vec4 r = vec4(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdRoundedBox((transform * vec3(p * scale, 1)).xy, b, r));
                 break;
             }
             case SDF_CMD_BOX:
             {
                 vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdBox((transform * vec3(p * scale, 1)).xy, b));
                 break;
             }
@@ -243,11 +255,6 @@ float evaluate(in vec2 p)
                 vec2 a = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 float th = uintBitsToFloat(commands[++pc]);
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdOrientedBox((transform * vec3(p * scale, 1)).xy, a, b, th));
                 break;
             }
@@ -255,22 +262,12 @@ float evaluate(in vec2 p)
             {
                 vec2 a = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdSegment((transform * vec3(p * scale, 1)).xy, a, b));
                 break;
             }
             case SDF_CMD_RHOMBUS:
             {
                 vec2 b = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdRhombus((transform * vec3(p * scale, 1)).xy, b));
                 break;
             }
@@ -279,22 +276,11 @@ float evaluate(in vec2 p)
                 vec2 A = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 vec2 B = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 vec2 C = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-                mat3 transform = mat3(
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-                    vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-                vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
                 pushEval(sdBezier((transform * vec3(p * scale, 1)).xy, A, B, C));
                 break;
             }
             // case SDF_CMD_POLYGON:
             // {
-            //     mat3 transform = mat3(
-            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])),
-            //     vec3(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc])));
-            //     vec2 scale = vec2(uintBitsToFloat(commands[++pc]), uintBitsToFloat(commands[++pc]));
-            // 
             //     uint pointCount = commands[++pc];
             //     uint start = pc;
             //     pc += pointCount;

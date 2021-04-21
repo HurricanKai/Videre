@@ -12,7 +12,9 @@ namespace Videre
         public List<uint> Data { get; } = new();
         private int _commandIndex = 0;
         private Matrix3X3<float> _transform = Matrix3X3<float>.Identity;
+        private Matrix3X3<float> _lastTransform = Matrix3X3<float>.Identity;
         private Vector2D<float> _scale = Vector2D<float>.One;
+        private Vector2D<float> _lastScale = Vector2D<float>.One;
 
         private static AllocationCreateInfo AllocationCreateInfo(VulkanMemoryPool? pool)
         {
@@ -167,15 +169,26 @@ namespace Videre
 
         private void WriteShapeData()
         {
-            Write(Matrix3X3.Transpose(_transform));
-            Write(_scale);
+            if (_lastTransform != _transform)
+            {
+                Write(Command.Transform);
+                Write(_transform);
+                _lastTransform = _transform;
+            }
+
+            if (_lastScale != _scale)
+            {
+                Write(Command.Scale);
+                Write(_scale);
+                _lastScale = _scale;
+            }
         }
         
         public void Circle(float radius)
         {
+            WriteShapeData();
             Write(Command.Circle);
             Write(radius);
-            WriteShapeData();
         }
 
         public void NoneShape()
@@ -185,59 +198,59 @@ namespace Videre
 
         public void RoundedBox(Vector2D<float> sideLengths, Vector4D<float> edgeRadius)
         {
+            WriteShapeData();
             Write(Command.RoundedBox);
             Write(sideLengths);
             Write(edgeRadius.X);
             Write(edgeRadius.Y);
             Write(edgeRadius.Z);
             Write(edgeRadius.W);
-            WriteShapeData();
         }
 
         public void Box(Vector2D<float> sideLength)
         {
+            WriteShapeData();
             Write(Command.Box);
             Write(sideLength);
-            WriteShapeData();
         }
 
         public void OrientedBox(Vector2D<float> a, Vector2D<float> b, float theta)
         {
+            WriteShapeData();
             Write(Command.OrientedBox);
             Write(a);
             Write(b);
             Write(theta);
-            WriteShapeData();
         }
 
         public void Segment(Vector2D<float> a, Vector2D<float> b)
         {
+            WriteShapeData();
             Write(Command.Segment);
             Write(a);
             Write(b);
-            WriteShapeData();
         }
 
         public void Rhombus(Vector2D<float> b)
         {
+            WriteShapeData();
             Write(Command.Rhombus);
             Write(b);
-            WriteShapeData();
         }
 
         public void Bezier(Vector2D<float> a, Vector2D<float> b, Vector2D<float> c)
         {
+            WriteShapeData();
             Write(Command.Bezier);
             Write(a);
             Write(b);
             Write(c);
-            WriteShapeData();
         }
 
         public void Polygon(params Vector2D<float>[] points)
         {
-            Write(Command.Polygon);
             WriteShapeData();
+            Write(Command.Polygon);
             Write((uint)points.Length);
             foreach (var t in points)
                 Write(t);
@@ -247,6 +260,8 @@ namespace Videre
         {
             // !!! KEEP IN SYNC WITH SHADER !!!
             End = 0,
+            Transform = 1,
+            Scale = 2,
 
             Union = 10,
             Subtraction = 11,
